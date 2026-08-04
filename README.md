@@ -42,6 +42,7 @@ Es una versión jugable del Tetris clásico con todas las mecánicas que esperar
 - **Sistema de puntuación** clásico de Tetris (100 / 300 / 500 / 800 multiplicado por nivel).
 - **Niveles** que aumentan cada 10 líneas y aceleran la caída.
 - **Pausa** y **Game Over** con opción de reinicio.
+- **Piezas especiales**: tras limpiar líneas, con cierta probabilidad la próxima pieza es un monobloque especial con uno de 5 efectos: Bomba, Rayo, Tinte, Gravedad o Congelar.
 
 ---
 
@@ -117,6 +118,14 @@ Contiene toda la lógica del juego. A grandes rasgos:
 - **Puntuación**: usa la tabla clásica `[0, 100, 300, 500, 800]` multiplicada por el nivel actual; el hard drop suma 2 puntos por celda recorrida y el soft drop 1 punto por fila.
 - **Nivel y velocidad**: el nivel sube cada 10 líneas; la velocidad de caída se calcula como `max(100, 1000 − (level − 1) × 90)` milisegundos.
 - **Ghost piece** (`ghostY`): proyecta la posición final de la pieza actual hacia abajo y la dibuja con `globalAlpha = 0.2`.
+- **Piezas especiales**: cada vez que `clearLines()` elimina al menos una línea, hace un sorteo (`SPECIAL_PIECE_CHANCE`) que marca `pendingSpecial`. Si está activo, la siguiente llamada a `randomPiece()` genera un monobloque (`shape = [[1]]`) con un `special` aleatorio entre `bomb`, `lightning`, `dye`, `gravity` y `freeze` (definidos en `SPECIAL_TYPES`), en vez de una pieza normal. Al fijarse (`lockPiece`), si la pieza tiene `special` se ejecuta su efecto (`applySpecialEffect`) en lugar de `merge()`:
+  - **Bomba**: vacía el área 3×3 centrada en la celda de aterrizaje.
+  - **Rayo**: vacía, al 50%, la fila o la columna completa de aterrizaje.
+  - **Tinte**: elimina del tablero todas las celdas del color más frecuente en ese momento.
+  - **Gravedad**: compacta cada columna, haciendo caer los bloques para eliminar huecos internos.
+  - **Congelar**: pausa solo la caída automática por gravedad durante `FREEZE_DURATION_MS`; el jugador sigue pudiendo mover, rotar y hacer soft/hard drop con normalidad.
+
+  Activar cualquier efecto especial otorga `SPECIAL_EFFECT_SCORE × nivel` puntos.
 
 ### Flujo del juego
 
@@ -128,12 +137,18 @@ init()
   └─ requestAnimationFrame(loop)
         ↓
    loop(timestamp)
-     ├─ acumula dt
-     ├─ si dt ≥ dropInterval → baja la pieza o llama a lockPiece()
+     ├─ si freezeRemaining > 0 → descuenta dt (gravedad en pausa)
+     ├─ si no: acumula dt, si dt ≥ dropInterval → baja la pieza o llama a lockPiece()
      ├─ draw()  (grid + tablero + ghost + pieza actual)
      └─ requestAnimationFrame(loop)
 
    keydown → mover / rotar / soft-drop / hard-drop / pausa
+
+   lockPiece()
+     ├─ si current.special → applySpecialEffect() (bomba/rayo/tinte/gravedad/congelar)
+     ├─ si no → merge()
+     ├─ clearLines()
+     └─ spawn()
 ```
 
 Cuando una pieza recién generada ya colisiona al aparecer (`spawn`), se dispara `endGame()` y se muestra el overlay de **Game Over**.
@@ -176,6 +191,10 @@ Algunos parámetros fáciles de tunear en `game.js`:
 | `COLORS`       | Paleta de colores por tipo de pieza      | 7 colores             |
 | `LINE_SCORES`  | Puntos por 1, 2, 3 o 4 líneas eliminadas | `[0,100,300,500,800]` |
 | `dropInterval` | Velocidad inicial de caída en ms         | `1000`                |
+| `SPECIAL_PIECE_CHANCE` | Probabilidad tras limpiar líneas de que la siguiente pieza sea especial | `0.15` |
+| `FREEZE_DURATION_MS`   | Duración del efecto Congelar en ms                                      | `5000` |
+| `SPECIAL_EFFECT_SCORE` | Puntos base (× nivel) al activar cualquier efecto especial              | `150`  |
+| `SPECIAL_TYPES`        | Nombre, símbolo y color por efecto (Bomba, Rayo, Tinte, Gravedad, Congelar) | 5 efectos |
 
 > Si cambias `COLS`, `ROWS` o `BLOCK`, recuerda ajustar también `width` y `height` del `<canvas id="board">` en `index.html` para que coincida (`COLS × BLOCK` × `ROWS × BLOCK`).
 

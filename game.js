@@ -28,6 +28,19 @@ const PIECES = [
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
 
+const SPECIAL_PIECE_CHANCE = 0.15;
+const FREEZE_DURATION_MS = 5000;
+const SPECIAL_EFFECT_SCORE = 150;
+
+const SPECIAL_TYPES = {
+  bomb:      { name: 'Bomba',    symbol: '💣', color: '#ff5252' },
+  lightning: { name: 'Rayo',     symbol: '⚡', color: '#fff176' },
+  dye:       { name: 'Tinte',    symbol: '🎨', color: '#ba68c8' },
+  gravity:   { name: 'Gravedad', symbol: '⬇',  color: '#4dd0e1' },
+  freeze:    { name: 'Congelar', symbol: '❄',  color: '#81d4fa' },
+};
+const SPECIAL_IDS = Object.keys(SPECIAL_TYPES);
+
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
@@ -41,16 +54,26 @@ const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeSwitch = document.getElementById('theme-switch');
 
-let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId, pendingSpecial, freezeRemaining;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
 }
 
 function randomPiece() {
+  if (pendingSpecial) {
+    pendingSpecial = false;
+    return randomSpecialPiece();
+  }
   const type = Math.floor(Math.random() * 7) + 1;
   const shape = PIECES[type].map(row => [...row]);
-  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  return { type, shape, special: null, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+}
+
+function randomSpecialPiece() {
+  const special = SPECIAL_IDS[Math.floor(Math.random() * SPECIAL_IDS.length)];
+  const shape = [[1]];
+  return { type: 'special', special, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
 }
 
 function collide(shape, ox, oy) {
@@ -76,6 +99,7 @@ function rotateCW(shape) {
 }
 
 function tryRotate() {
+  if (current.special) return;
   const rotated = rotateCW(current.shape);
   const kicks = [0, -1, 1, -2, 2];
   for (const kick of kicks) {
@@ -109,6 +133,7 @@ function clearLines() {
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    pendingSpecial = Math.random() < SPECIAL_PIECE_CHANCE;
     updateHUD();
   }
 }
@@ -137,9 +162,59 @@ function softDrop() {
 }
 
 function lockPiece() {
-  merge();
+  if (current.special) applySpecialEffect();
+  else merge();
   clearLines();
   spawn();
+}
+
+function applySpecialEffect() {
+  switch (current.special) {
+    case 'bomb': bombEffect(); break;
+    case 'lightning': lightningEffect(); break;
+    case 'dye': dyeEffect(); break;
+    case 'gravity': gravityEffect(); break;
+    case 'freeze': freezeEffect(); break;
+  }
+  score += SPECIAL_EFFECT_SCORE * level;
+  updateHUD();
+}
+
+function bombEffect() {
+  for (let r = current.y - 1; r <= current.y + 1; r++)
+    for (let c = current.x - 1; c <= current.x + 1; c++)
+      if (r >= 0 && r < ROWS && c >= 0 && c < COLS) board[r][c] = 0;
+}
+
+function lightningEffect() {
+  if (Math.random() < 0.5) board[current.y].fill(0);
+  else for (let r = 0; r < ROWS; r++) board[r][current.x] = 0;
+}
+
+function dyeEffect() {
+  const counts = new Array(8).fill(0);
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c]) counts[board[r][c]]++;
+  let target = 0, max = 0;
+  for (let i = 1; i <= 7; i++) if (counts[i] > max) { max = counts[i]; target = i; }
+  if (!target) return;
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c] === target) board[r][c] = 0;
+}
+
+function gravityEffect() {
+  for (let c = 0; c < COLS; c++) {
+    const values = [];
+    for (let r = 0; r < ROWS; r++) if (board[r][c]) values.push(board[r][c]);
+    for (let r = 0; r < ROWS; r++) board[r][c] = 0;
+    for (let i = 0; i < values.length; i++) board[ROWS - values.length + i][c] = values[i];
+  }
+}
+
+function freezeEffect() {
+  freezeRemaining = FREEZE_DURATION_MS;
 }
 
 function spawn() {
@@ -167,6 +242,30 @@ function drawBlock(context, x, y, colorIndex, size, alpha) {
   context.fillStyle = 'rgba(255,255,255,0.12)';
   context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
   context.globalAlpha = 1;
+}
+
+function drawSpecialBlock(context, x, y, specialId, size, alpha) {
+  const info = SPECIAL_TYPES[specialId];
+  context.globalAlpha = alpha ?? 1;
+  context.fillStyle = info.color;
+  context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
+  context.fillStyle = 'rgba(255,255,255,0.12)';
+  context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+  context.fillStyle = '#0f0f17';
+  context.font = `${Math.floor(size * 0.6)}px sans-serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(info.symbol, x * size + size / 2, y * size + size / 2 + 1);
+  context.globalAlpha = 1;
+}
+
+function drawShape(context, shape, ox, oy, size, special, alpha) {
+  for (let r = 0; r < shape.length; r++)
+    for (let c = 0; c < shape[r].length; c++) {
+      if (!shape[r][c]) continue;
+      if (special) drawSpecialBlock(context, ox + c, oy + r, special, size, alpha);
+      else drawBlock(context, ox + c, oy + r, shape[r][c], size, alpha);
+    }
 }
 
 function drawGrid() {
@@ -197,15 +296,10 @@ function draw() {
 
   // ghost
   const gy = ghostY();
-  for (let r = 0; r < current.shape.length; r++)
-    for (let c = 0; c < current.shape[r].length; c++)
-      if (current.shape[r][c])
-        drawBlock(ctx, current.x + c, gy + r, current.shape[r][c], BLOCK, 0.2);
+  drawShape(ctx, current.shape, current.x, gy, BLOCK, current.special, 0.2);
 
   // current piece
-  for (let r = 0; r < current.shape.length; r++)
-    for (let c = 0; c < current.shape[r].length; c++)
-      drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+  drawShape(ctx, current.shape, current.x, current.y, BLOCK, current.special);
 }
 
 function drawNext() {
@@ -214,9 +308,7 @@ function drawNext() {
   const shape = next.shape;
   const offX = Math.floor((4 - shape[0].length) / 2);
   const offY = Math.floor((4 - shape.length) / 2);
-  for (let r = 0; r < shape.length; r++)
-    for (let c = 0; c < shape[r].length; c++)
-      drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
+  drawShape(nextCtx, shape, offX, offY, NB, next.special);
 }
 
 function endGame() {
@@ -244,15 +336,20 @@ function togglePause() {
 function loop(ts) {
   const dt = ts - lastTime;
   lastTime = ts;
-  dropAccum += dt;
-  if (dropAccum >= dropInterval) {
-    dropAccum = 0;
-    if (!collide(current.shape, current.x, current.y + 1)) {
-      current.y++;
-    } else {
-      lockPiece();
+  if (freezeRemaining > 0) {
+    freezeRemaining -= dt;
+  } else {
+    dropAccum += dt;
+    if (dropAccum >= dropInterval) {
+      dropAccum = 0;
+      if (!collide(current.shape, current.x, current.y + 1)) {
+        current.y++;
+      } else {
+        lockPiece();
+      }
     }
   }
+  if (gameOver) return;
   draw();
   animId = requestAnimationFrame(loop);
 }
@@ -266,6 +363,8 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  pendingSpecial = false;
+  freezeRemaining = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
